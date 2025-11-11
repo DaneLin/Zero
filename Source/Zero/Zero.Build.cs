@@ -33,7 +33,7 @@ public class Zero : ModuleRules
 				"InputCore",
 				"Projects",
 				"RHI",
-				"RHICore"
+				"RHICore", "ProceduralMeshComponent"
 			}
 			);
 			
@@ -49,7 +49,9 @@ public class Zero : ModuleRules
 				"Renderer",
 				"RenderCore",
 				"RHI",
-				"Projects"
+				"Projects", 
+				"ProceduralMeshComponent",
+				"PhysicsCore"
 			}
 			);
 		
