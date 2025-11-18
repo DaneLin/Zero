@@ -28,15 +28,15 @@ public class Zero : ModuleRules
 			new string[]
 			{
 				"Core",
-				// ... add other public dependencies that you statically link with here ...
 				"CoreUObject",
 				"Engine",
 				"InputCore",
 				"Projects",
 				"RHI",
-				"RHICore",
-				"Renderer",
+				"RHICore",           // Added RHICore here
+				"Renderer",          // Critical for vertex factory base classes
 				"RenderCore",
+				
 			}
 		);
 
@@ -47,15 +47,13 @@ public class Zero : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
-				"Slate",
-				"SlateCore",
-				// ... add private dependencies that you statically link with here ...	
-				"Renderer",
-				"RenderCore",
-				"RHI",
-				"RHICore",
+				"InputCore",
 				"Projects",
-				"PhysicsCore"
+				"RHI",
+				"RHICore",           // Added RHICore here
+				"Renderer",          // Critical for vertex factory base classes
+				"RenderCore",
+				"PhysicsCore",
 			}
 		);
 
@@ -66,5 +64,6 @@ public class Zero : ModuleRules
 				// ... add any modules that your module loads dynamically here ...
 			}
 		);
+		
 	}
 }
