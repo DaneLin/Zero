@@ -28,6 +28,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Chart")
 	void DrawSimpleTriangle();
 	
+	UFUNCTION(BlueprintCallable, Category="Chart")
+	void DrawInstancedTriangle();
+	
 private:
 
 	UPROPERTY(EditAnywhere, Category="Chart", meta=(AllowPrivateAccess = true))
@@ -35,4 +38,7 @@ private:
 
 	UPROPERTY(EditAnywhere, Category="Chart", meta=(AllowPrivateAccess = true))
 	UVisMeshComponent* VisMeshComponent;
+
+	UPROPERTY(EditAnywhere, Category="Chart", meta=(AllowPrivateAccess = true))
+	bool bUseInstance;
 };

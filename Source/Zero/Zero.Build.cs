@@ -7,40 +7,44 @@ public class Zero : ModuleRules
 	public Zero(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-		
+
 		PublicIncludePaths.AddRange(
-			new string[] {
+			new string[]
+			{
 				// ... add public include paths required here ...
 			}
-			);
-				
-		
+		);
+
+
 		PrivateIncludePaths.AddRange(
-			new string[] {
+			new string[]
+			{
 				// ... add other private include paths required here ...
 			}
-			);
-			
-		
+		);
+
+
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
 				"Core",
 				// ... add other public dependencies that you statically link with here ...
-				"RenderCore",
 				"CoreUObject",
 				"Engine",
 				"InputCore",
 				"Projects",
 				"RHI",
-				"RHICore", "ProceduralMeshComponent"
+				"RHICore",
+				"Renderer",
+				"RenderCore",
 			}
-			);
-			
-		
+		);
+
+
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
+				"Core",
 				"CoreUObject",
 				"Engine",
 				"Slate",
@@ -49,18 +53,18 @@ public class Zero : ModuleRules
 				"Renderer",
 				"RenderCore",
 				"RHI",
-				"Projects", 
-				"ProceduralMeshComponent",
+				"RHICore",
+				"Projects",
 				"PhysicsCore"
 			}
-			);
-		
-		
+		);
+
+
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[]
 			{
 				// ... add any modules that your module loads dynamically here ...
 			}
-			);
+		);
 	}
 }

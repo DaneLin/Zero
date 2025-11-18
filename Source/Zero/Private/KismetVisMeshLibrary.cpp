@@ -761,7 +761,7 @@ bool TriangulatePoly(TArray<uint32>& OutTris, const TArray<FVisMeshVertex>& Poly
 		// If we couldn't find an 'ear' it indicates something is bad with this polygon - discard triangles and return.
 		if (!bFoundEar)
 		{
-			OutTris.SetNum(TriBase, true);
+			OutTris.SetNum(TriBase);
 			return false;
 		}
 	}
