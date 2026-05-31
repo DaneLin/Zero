@@ -1,0 +1,226 @@
+#include "/Engine/Private/Common.ush"
+
+float4x4 ProjectionMatrix;
+float4x4 ViewMatrix;
+float3 CameraPosition;
+
+RWBuffer<float4> RWInstanceOriginBuffer;
+RWBuffer<float4> RWInstanceTransformBuffer;
+RWBuffer<uint> RWCSInstanceArgs;
+
+RWBuffer<uint> RWGenCSInstanceCount;
+Buffer<float4> PossibleInstancePos;
+
+// Code from NaniteHZBCulling
+float2 ProjectSphere( float x, float z, float r, float ResultScale )
+{
+#if 1
+	float t = sqrt( x*x + z*z - r*r );
+
+	float A = ( t*z + r*x );
+	float B = ( t*z - r*x );
+	ResultScale /= ( A * B );	// Divide by common denominator instead of dividing twice
+
+	float Min = ( t*x - r*z ) * B;
+	float Max = ( t*x + r*z ) * A;
+
+	return float2( Min, Max ) * ResultScale;
+#else
+	float t = sqrt( x*x + z*z - r*r );
+
+	float Min = ( t*x - r*z ) / ( t*z + r*x );
+	float Max = ( t*x + r*z ) / ( t*z - r*x );
+
+	return float2( Min, Max ) * ResultScale;
+#endif
+}
+
+// [ Mara & Morgan 2013, "2D Polyhedral Bounds of a Clipped, Perspective-Projected 3D Sphere" ]
+float4 SphereToScreenRect( float3 Center, float Radius, float4x4 ViewToClip )
+{
+	float2 ExtentX = ProjectSphere( Center.x, Center.z, Radius, ViewToClip[0][0] ) + ViewToClip[2][0];
+	float2 ExtentY = ProjectSphere( Center.y, Center.z, Radius, ViewToClip[1][1] ) + ViewToClip[2][1];
+
+	return float4( ExtentX.x, ExtentY.x, ExtentX.y, ExtentY.y );
+}
+
+// Assumes we have already handled the z+r < ZNear case
+float2 ProjectSphereNearClip( float x, float z, float r, float ResultScale, float ZNear )
+{
+	float clen2 = x * x + z * z;
+	float t2 = clen2 - r * r;
+	float t = sqrt( t2 );
+
+	float scaled_cos_theta = t2;
+	float scaled_sin_theta = r * t;
+
+	// obtain B by rotating by Theta
+	float2 B = float2( scaled_cos_theta * x + scaled_sin_theta * z, -scaled_sin_theta * x + scaled_cos_theta * z );
+	// obtain T by rotating by -Theta
+	float2 T = float2( scaled_cos_theta * x - scaled_sin_theta * z,  scaled_sin_theta * x + scaled_cos_theta * z );
+
+	float h = ZNear - z;
+	float d = sqrt( r * r - h * h );
+
+	if ( t2 < 0.0 || T.y < ZNear * clen2 )
+	{
+		T.x = x - d;
+		T.y = ZNear;
+	}
+
+	if ( t2 < 0.0 || B.y < ZNear * clen2 )
+	{
+		B.x = x + d;
+		B.y = ZNear;
+	}
+
+	return float2( T.x / T.y, B.x / B.y ) * ResultScale;
+}
+
+
+// [ Mara & Morgan 2013, "2D Polyhedral Bounds of a Clipped, Perspective-Projected 3D Sphere" ]
+float4 SphereToScreenRectNearClip( float3 Center, float Radius, float4x4 ViewToClip, float ZNear )
+{
+	float2 ExtentX = ProjectSphereNearClip( Center.x, Center.z, Radius, ViewToClip[0][0], ZNear ) + ViewToClip[2][0];
+	float2 ExtentY = ProjectSphereNearClip( Center.y, Center.z, Radius, ViewToClip[1][1], ZNear ) + ViewToClip[2][1];
+
+	return float4( ExtentX.x, ExtentY.x, ExtentX.y, ExtentY.y );
+}
+
+float4 SphereToScreenRectOrtho( float3 Center, float Radius, float4x4 ViewToClip )
+{
+	float2 ExtentX = float2( Center.x - Radius, Center.x + Radius ) * ViewToClip[0][0] + ViewToClip[2][0];
+	float2 ExtentY = float2( Center.y - Radius, Center.y + Radius ) * ViewToClip[1][1] + ViewToClip[2][1];
+
+	return float4( ExtentX.x, ExtentY.x, ExtentX.y, ExtentY.y );
+}
+
+struct FFrustumCullData
+{
+	float3	RectMin;
+	float3	RectMax;
+
+	bool	bCrossesFarPlane;
+	bool	bCrossesNearPlane;
+	bool	bFrustumSideCulled;
+	bool	bIsVisible;
+};
+
+FFrustumCullData SphereCullFrustum(float3 Center, float Radius, float4x4 ViewToClip, float ZNear, bool bNearClip, bool bSkipFrustumCull)
+{
+	FFrustumCullData Cull;
+		
+	float SphereMaxZ = Center.z + Radius;
+	float SphereMinZ = Center.z - Radius;
+
+	Cull.bCrossesNearPlane	= false;
+	Cull.bCrossesFarPlane	= false;
+	Cull.bIsVisible = true;
+
+	if (bNearClip)
+	{
+		// Near plane cull
+		if (Cull.bIsVisible)
+		{
+			Cull.bIsVisible = (SphereMaxZ > ZNear);
+		}
+	}
+
+	// Far plane cull
+	if (Cull.bIsVisible)
+	{
+		Cull.bIsVisible = (SphereMinZ * ViewToClip[2][2] + ViewToClip[3][2] > 0);
+	}
+	
+	Cull.bCrossesNearPlane	= ( SphereMinZ < ZNear );
+	Cull.bCrossesFarPlane	= ( SphereMaxZ * ViewToClip[2][2] + ViewToClip[3][2] < 0 );
+
+	float Depth = ViewToClip[2][2] + ViewToClip[3][2] / SphereMinZ;
+	
+	float4 Rect;
+	if( ViewToClip[3][3] >= 1 )
+	{
+		Rect = SphereToScreenRectOrtho( Center, Radius, ViewToClip );
+		Depth = SphereMinZ * ViewToClip[2][2] + ViewToClip[3][2];
+	}
+	else if( Cull.bCrossesNearPlane )
+	{
+		Rect = SphereToScreenRectNearClip( Center, Radius, ViewToClip, ZNear );
+	}
+	else
+	{
+		Rect = SphereToScreenRect( Center, Radius, ViewToClip );
+	}
+
+	Cull.RectMin = float3( Rect.xy, 0 );
+	Cull.RectMax = float3( Rect.zw, Depth );
+
+	// Frustum cull
+	if (Cull.bIsVisible && !bSkipFrustumCull /* for debugging */)
+	{
+		Cull.bIsVisible = all(Cull.RectMin.xy < 1) && all(Cull.RectMax.xy > -1);
+	}
+
+	return Cull;
+}
+
+bool FrustumCulling(float4 PossiblePosition)
+{
+	//DEBUG
+	return true;
+	
+	// TODO : Need finish Frustum Culling
+	float3 CenterPos = mul( float4(PossiblePosition.xyz ,1) , ViewMatrix) .xyz;	//ViewSpace Position
+	const float Radius = 50.f;
+	const float ZNear = 0.0f;
+	const bool bNearClip = true;
+	const bool bSkipFrustumCull = false;
+	return SphereCullFrustum(CenterPos , Radius , ProjectionMatrix , ZNear , bNearClip , bSkipFrustumCull).bIsVisible;
+}
+
+[numthreads(BUFFER_GEN_THREAD_COUNT, 1, 1)]
+void MainCS(uint TaskIndex : SV_DispatchThreadID)
+{
+	if (TaskIndex == 0)
+	{
+		uint PlaceHolder = 0;
+		InterlockedExchange(RWCSInstanceArgs[0], 0, PlaceHolder);
+	}
+
+	GroupMemoryBarrierWithGroupSync();
+
+	if(TaskIndex < RWGenCSInstanceCount[0])
+	{
+		float4 CameraTransform = float4( CameraPosition , 0);
+		// First we calculate all desirable positions according to the culling.
+		float4 PossiblePosition = PossibleInstancePos[TaskIndex];
+		//DEBUG ：手动输入采样的Index
+		//float4 PossiblePosition = float4(TaskIndex, TaskIndex, TaskIndex, TaskIndex);
+		if(FrustumCulling(PossiblePosition ))
+		{
+			uint WriteIndex;
+			InterlockedAdd(RWCSInstanceArgs[0],1, WriteIndex);
+			//PerInstance 位移
+			RWInstanceOriginBuffer[WriteIndex] = /*float4( TaskIndex.x*150 ,0 ,0 ,1); //*/PossiblePosition;
+			//PerInstance 旋转矩阵
+			RWInstanceTransformBuffer[WriteIndex * 3 + 0] = float4(1,0,0,0);
+			RWInstanceTransformBuffer[WriteIndex * 3 + 1] = float4(0,1,0,0);
+			RWInstanceTransformBuffer[WriteIndex * 3 + 2] = float4(0,0,1,0);
+		}
+		else
+		{
+			uint WriteIndex;
+			InterlockedAdd(RWCSInstanceArgs[0],1, WriteIndex);
+			
+			float3 CenterPos = mul( float4(PossiblePosition.xyz ,1) , ViewMatrix) .xyz;	//ViewSpace Position
+			//PerInstance 位移
+			RWInstanceOriginBuffer[WriteIndex] = float4( CameraTransform); //*/PossiblePosition;
+			//PerInstance 旋转矩阵
+			RWInstanceTransformBuffer[WriteIndex * 3 + 0] = float4(1,0,0,0);
+			RWInstanceTransformBuffer[WriteIndex * 3 + 1] = float4(0,1,0,0);
+			RWInstanceTransformBuffer[WriteIndex * 3 + 2] = float4(0,0,1,0);
+		}
+	}
+
+	AllMemoryBarrierWithGroupSync();
+}

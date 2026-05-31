@@ -116,7 +116,7 @@ void AExampleChart::DrawInstancedTriangle()
 	UV0.Add(FVector2D(0.f, 1.f));
 
 	// 顶点色（可选）
-	TArray<FColor> Colors;
+	TArray<FLinearColor> Colors;
 	Colors.Add(FColor::Red);
 	Colors.Add(FColor::Green);
 	Colors.Add(FColor::Blue);
@@ -131,7 +131,7 @@ void AExampleChart::DrawInstancedTriangle()
 	}
 
 	// 创建第 0 个 Section；关闭碰撞以节省开销
-	VisMeshComponent->CreateMeshSection(
+	VisMeshComponent->CreateMeshSection_LinearColor(
 		/*SectionIndex*/ 0,
 		                 /*Vertices   */ Vertices,
 		                 /*Triangles  */ Triangles,

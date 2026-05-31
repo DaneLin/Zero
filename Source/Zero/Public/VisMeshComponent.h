@@ -12,6 +12,8 @@ struct FKConvexElem;
 
 class FPrimitiveSceneProxy;
 
+
+
 /**
 *	Note: Codes from UvisMeshComponent.h
 *	Struct used to specify a tangent vector for a vertex
@@ -143,7 +145,14 @@ public:
 };
 
 
-
+class FVisMeshSectionUpdateData
+{
+public:
+	/** Section to update */
+	int32 TargetSection;
+	/** New vertex information */
+	TArray<FVisMeshVertex> NewVertexBuffer;
+};
 
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent), ClassGroup= Rendering)
 class ZERO_API UVisMeshComponent : public UMeshComponent, public IInterface_CollisionDataProvider

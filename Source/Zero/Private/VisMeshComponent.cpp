@@ -31,28 +31,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogVisComponent, Log, All);
 
 
 
-class FVisMeshDummyFloatBuffer : public FVertexBufferWithSRV
-{
-public:
-	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
-	{
-		/// Create the texture RHI.  		
-		FRHIResourceCreateInfo CreateInfo(TEXT("DummyFloatBuffer"));
 
-		const int32 NumFloats = 4;
-		VertexBufferRHI = RHICmdList.CreateVertexBuffer(sizeof(float) * NumFloats, BUF_Static | BUF_ShaderResource,
-		                                                CreateInfo);
-
-		float* BufferData = (float*)RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(float) * NumFloats, RLM_WriteOnly);
-		FMemory::Memzero(BufferData, sizeof(float) * NumFloats);
-		RHICmdList.UnlockBuffer(VertexBufferRHI);
-
-		// Create a view of the buffer
-		ShaderResourceViewRHI = RHICmdList.CreateShaderResourceView(VertexBufferRHI, sizeof(float), PF_R32_FLOAT);
-	}
-};
-
-TGlobalResource<FVisMeshDummyFloatBuffer> GVisMeshDummyFloatBuffer;
 
 
 /** Class representing a single section of the proc mesh */
@@ -83,14 +62,7 @@ public:
  *	Struct used to send update to mesh data 
  *	Arrays may be empty, in which case no update is performed.
  */
-class FVisMeshSectionUpdateData
-{
-public:
-	/** Section to update */
-	int32 TargetSection;
-	/** New vertex information */
-	TArray<FVisMeshVertex> NewVertexBuffer;
-};
+
 
 static void ConvertProcMeshToDynMeshVertex(FDynamicMeshVertex& Vert, const FVisMeshVertex& ProcVert)
 {
@@ -410,391 +382,7 @@ private:
 	FMaterialRelevance MaterialRelevance;
 };
 
-/** Class representing a single section of the proc mesh */
-class FVisMeshInstancedProxySection
-{
-public:
-	/** Material applied to this section */
-	UMaterialInterface* Material;
-	/** Vertex buffer for this section */
-	FStaticMeshVertexBuffers VertexBuffers;
 
-	/** Index buffer for this section */
-	FDynamicMeshIndexBuffer32 IndexBuffer;
-
-	/** Vertex factory for this section */
-	FInstancedVisMeshVertexFactory VertexFactory;
-	/** Whether this section is currently visible */
-	bool bSectionVisible;
-
-	FVisMeshInstancedProxySection(ERHIFeatureLevel::Type InFeatureLevel)
-		: Material(nullptr)
-		  , VertexFactory(InFeatureLevel)
-		  , bSectionVisible(true)
-	{
-	}
-};
-
-
-class FVisMeshInstancedSceneProxy final : public FPrimitiveSceneProxy
-{
-public:
-	virtual SIZE_T GetTypeHash() const override
-	{
-		static size_t UniquePointer;
-		return reinterpret_cast<size_t>(&UniquePointer);
-	}
-
-	FVisMeshInstancedSceneProxy(UVisMeshComponent* Component)
-		: FPrimitiveSceneProxy(Component)
-		  , InstanceNum(Component->InstanceNum)
-		  , BodySetup(Component->GetBodySetup())
-		  , MaterialRelevance(Component->GetMaterialRelevance(GetScene().GetFeatureLevel()))
-	{
-		// Static copy each section
-		const int32 NumSections = Component->VisMeshSections.Num();
-		Sections.AddZeroed(NumSections);
-		for (int SectionIdx = 0; SectionIdx < NumSections; ++SectionIdx)
-		{
-			FVisMeshSection& SrcSection = Component->VisMeshSections[SectionIdx];
-			if (SrcSection.ProcIndexBuffer.Num() > 0 && SrcSection.ProcVertexBuffer.Num() > 0)
-			{
-				FVisMeshInstancedProxySection* NewSection = new FVisMeshInstancedProxySection(
-					GetScene().GetFeatureLevel());
-
-				// Copy data from vertex buffer
-				const int32 NumVerts = SrcSection.ProcVertexBuffer.Num();
-
-				// Allocate verts
-				TArray<FDynamicMeshVertex> Vertices;
-				Vertices.SetNumUninitialized(NumVerts);
-				// Copy verts
-				for (int VertIdx = 0; VertIdx < NumVerts; VertIdx++)
-				{
-					const FVisMeshVertex& ProcVert = SrcSection.ProcVertexBuffer[VertIdx];
-					FDynamicMeshVertex& Vert = Vertices[VertIdx];
-					ConvertProcMeshToDynMeshVertex(Vert, ProcVert);
-				}
-
-				// Copy index buffer
-				NewSection->IndexBuffer.Indices = SrcSection.ProcIndexBuffer;
-
-				NewSection->VertexBuffers.InitFromDynamicVertex(&NewSection->VertexFactory, Vertices, 4);
-
-				// Enqueue initialization of render resource
-				BeginInitResource(&NewSection->VertexBuffers.PositionVertexBuffer);
-				BeginInitResource(&NewSection->VertexBuffers.StaticMeshVertexBuffer);
-				BeginInitResource(&NewSection->VertexBuffers.ColorVertexBuffer);
-				BeginInitResource(&NewSection->IndexBuffer);
-				BeginInitResource(&NewSection->VertexFactory);
-
-				//NewSection->InstanceBuffer.BindInstanceVertexBuffer(&NewSection->VertexFactory,InstanceData);
-
-				// Grab material
-				NewSection->Material = Component->GetMaterial(SectionIdx);
-				if (NewSection->Material == nullptr)
-				{
-					NewSection->Material = UMaterial::GetDefaultMaterial(MD_Surface);
-				}
-
-				// Copy visibility info
-				NewSection->bSectionVisible = SrcSection.bSectionVisible;
-
-				// Save ref to new section
-				Sections[SectionIdx] = NewSection;
-			}
-		}
-	}
-
-	virtual ~FVisMeshInstancedSceneProxy() override
-	{
-		for (FVisMeshInstancedProxySection* Section : Sections)
-		{
-			if (Section != nullptr)
-			{
-				Section->VertexBuffers.PositionVertexBuffer.ReleaseResource();
-				Section->VertexBuffers.StaticMeshVertexBuffer.ReleaseResource();
-				Section->VertexBuffers.ColorVertexBuffer.ReleaseResource();
-				Section->IndexBuffer.ReleaseResource();
-				Section->VertexFactory.ReleaseResource();
-
-				delete Section;
-			}
-		}
-	}
-
-	void UpdateSection_RenderThread(FRHICommandListBase& RHICmdList, FVisMeshSectionUpdateData* SectionData)
-	{
-		SCOPE_CYCLE_COUNTER(STAT_VisMesh_UpdateSectionRT);
-
-		// Check if we have data
-		if (SectionData != nullptr)
-		{
-			// Check it references a valid section
-			if (SectionData->TargetSection < Sections.Num() &&
-				Sections[SectionData->TargetSection] != nullptr)
-			{
-				FVisMeshInstancedProxySection* Section = Sections[SectionData->TargetSection];
-
-				// Lock vertex buffer
-				const int32 NumVerts = SectionData->NewVertexBuffer.Num();
-
-				// Iterate through vertex data, copying in new info
-				for (int32 i = 0; i < NumVerts; i++)
-				{
-					const FVisMeshVertex& ProcVert = SectionData->NewVertexBuffer[i];
-					FDynamicMeshVertex Vertex;
-					ConvertProcMeshToDynMeshVertex(Vertex, ProcVert);
-
-					Section->VertexBuffers.PositionVertexBuffer.VertexPosition(i) = Vertex.Position;
-					Section->VertexBuffers.StaticMeshVertexBuffer.SetVertexTangents(
-						i, Vertex.TangentX.ToFVector3f(), Vertex.GetTangentY(), Vertex.TangentZ.ToFVector3f());
-					Section->VertexBuffers.StaticMeshVertexBuffer.SetVertexUV(i, 0, Vertex.TextureCoordinate[0]);
-					Section->VertexBuffers.StaticMeshVertexBuffer.SetVertexUV(i, 1, Vertex.TextureCoordinate[1]);
-					Section->VertexBuffers.StaticMeshVertexBuffer.SetVertexUV(i, 2, Vertex.TextureCoordinate[2]);
-					Section->VertexBuffers.StaticMeshVertexBuffer.SetVertexUV(i, 3, Vertex.TextureCoordinate[3]);
-					Section->VertexBuffers.ColorVertexBuffer.VertexColor(i) = Vertex.Color;
-				}
-
-				{
-					auto& VertexBuffer = Section->VertexBuffers.PositionVertexBuffer;
-					void* VertexBufferData = RHICmdList.LockBuffer(VertexBuffer.VertexBufferRHI, 0,
-					                                               VertexBuffer.GetNumVertices() * VertexBuffer.
-					                                               GetStride(), RLM_WriteOnly);
-					FMemory::Memcpy(VertexBufferData, VertexBuffer.GetVertexData(),
-					                VertexBuffer.GetNumVertices() * VertexBuffer.GetStride());
-					RHICmdList.UnlockBuffer(VertexBuffer.VertexBufferRHI);
-				}
-
-				{
-					auto& VertexBuffer = Section->VertexBuffers.ColorVertexBuffer;
-					void* VertexBufferData = RHICmdList.LockBuffer(VertexBuffer.VertexBufferRHI, 0,
-					                                               VertexBuffer.GetNumVertices() * VertexBuffer.
-					                                               GetStride(), RLM_WriteOnly);
-					FMemory::Memcpy(VertexBufferData, VertexBuffer.GetVertexData(),
-					                VertexBuffer.GetNumVertices() * VertexBuffer.GetStride());
-					RHICmdList.UnlockBuffer(VertexBuffer.VertexBufferRHI);
-				}
-
-				{
-					auto& VertexBuffer = Section->VertexBuffers.StaticMeshVertexBuffer;
-					void* VertexBufferData = RHICmdList.LockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI, 0,
-					                                               VertexBuffer.GetTangentSize(), RLM_WriteOnly);
-					FMemory::Memcpy(VertexBufferData, VertexBuffer.GetTangentData(), VertexBuffer.GetTangentSize());
-					RHICmdList.UnlockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI);
-				}
-
-				{
-					auto& VertexBuffer = Section->VertexBuffers.StaticMeshVertexBuffer;
-					void* VertexBufferData = RHICmdList.LockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI, 0,
-					                                               VertexBuffer.GetTexCoordSize(), RLM_WriteOnly);
-					FMemory::Memcpy(VertexBufferData, VertexBuffer.GetTexCoordData(), VertexBuffer.GetTexCoordSize());
-					RHICmdList.UnlockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI);
-				}
-
-				// FStaticMeshInstanceData* InstanceDataPtr = Section->InstanceBuffer.GetInstanceData();
-				// InstanceDataPtr->AllocateInstances(InstanceNum, 0, EResizeBufferFlags::None,false);
-				//
-				// // 根据Component给的参数，生成一个SRV供Origin和Transform使用
-				// // Range: Instance
-				// TResourceArray<FVector4> InstanceOriginResources;
-				// TResourceArray<FVector4> InstanceTransformResources;
-				// for (int i =0 ; i < InstanceNum; ++i)
-				// {
-				// 	InstanceOriginResources.Add(FVector4(0, i * 150, 0, 1));
-				// 	InstanceTransformResources.Add(FVector4(1, 0, 0, 0));
-				// 	InstanceTransformResources.Add(FVector4(0, 1, 0, 0));
-				// 	InstanceTransformResources.Add(FVector4(0, 0, 1, 0));
-				//
-				// 	FVector3f Origin(0, i * 150, 0);
-				//
-				// 	FMatrix44f Transform = FMatrix44f::Identity;
-				//
-				// 	Transform.M[0][0] = 1;  Transform.M[0][1] = 0;  Transform.M[0][2] = 0;  Transform.M[0][3] = 0;
-				// 	Transform.M[1][0] = 0;  Transform.M[1][1] = 1;  Transform.M[1][2] = 0;  Transform.M[1][3] = 0;
-				// 	Transform.M[2][0] = 0;  Transform.M[2][1] = 0;  Transform.M[2][2] = 1;  Transform.M[2][3] = 0;
-				//
-				// 	Transform.M[3][0] = Origin.X;
-				// 	Transform.M[3][1] = Origin.Y;
-				// 	Transform.M[3][2] = Origin.Z;
-				// 	Transform.M[3][3] = 1;
-				// 	
-				//
-				// 	InstanceDataPtr->SetInstance(i ,Transform);
-				// }
-
-
-				// //开始填充到SRV	//TODO:这里可能有问题,待检查
-				// FRHIResourceCreateInfo OriginInfo(TEXT("InstanceOriginResource") , &InstanceOriginResources);
-				// FBufferRHIRef OutOriginBuffferRHI = RHICmdList.CreateVertexBuffer(InstanceOriginResources.GetResourceDataSize() ,EBufferUsageFlags::Static|EBufferUsageFlags::ShaderResource , OriginInfo);
-				// OriginSRV = RHICmdList.CreateShaderResourceView(OutOriginBuffferRHI , sizeof(FVector4f) , PF_A32B32G32R32F);
-				//
-				// FRHIResourceCreateInfo TransformInfo(TEXT("InstanceTransformResource") , &InstanceTransformResources);
-				// FBufferRHIRef OutTransformBufferRHI = RHICmdList.CreateVertexBuffer(InstanceTransformResources.GetResourceDataSize() , EBufferUsageFlags::Static|EBufferUsageFlags::ShaderResource , TransformInfo);
-				// TransformSRV = RHICmdList.CreateShaderResourceView(OutTransformBufferRHI , sizeof(FVector4f) , PF_A32B32G32R32F);
-			}
-
-
-			// Free data sent from game thread
-			delete SectionData;
-		}
-	}
-
-	void SetSectionVisibility_RenderThread(int32 SectionIndex, bool bNewVisibility)
-	{
-		check(IsInRenderingThread());
-
-		if (SectionIndex < Sections.Num() &&
-			Sections[SectionIndex] != nullptr)
-		{
-			Sections[SectionIndex]->bSectionVisible = bNewVisibility;
-		}
-	}
-
-	// 收集每个view下每个LOD的FPrimitiveSceneProxy，并转换成FMeshBatch
-	// 设置FMeshBatch中的FMeshBatchElement中的IndexBuffer, NumPrimitive, UniformBuffer等等关于渲染的东西
-	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily,
-	                                    uint32 VisibilityMap, class FMeshElementCollector& Collector) const override
-	{
-		// Set up wireframe material (if needed)
-		const bool bWireframe = AllowDebugViewmodes() && ViewFamily.EngineShowFlags.Wireframe;
-
-		FColoredMaterialRenderProxy* WireframeMaterialInstance = nullptr;
-		if (bWireframe)
-		{
-			WireframeMaterialInstance = new FColoredMaterialRenderProxy(
-				GEngine->WireframeMaterial ? GEngine->WireframeMaterial->GetRenderProxy() : NULL,
-				FLinearColor(0, 0.5f, 1.f)
-			);
-
-			Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
-		}
-
-		for (const FVisMeshInstancedProxySection* Section : Sections)
-		{
-			if (Section != nullptr && Section->bSectionVisible)
-			{
-				FMaterialRenderProxy* MaterialProxy = bWireframe
-					                                      ? WireframeMaterialInstance
-					                                      : Section->Material->GetRenderProxy();
-
-				// For each view..
-				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
-				{
-					if (VisibilityMap & (1 << ViewIndex))
-					{
-						const FSceneView* View = Views[ViewIndex];
-						// Draw the mesh
-						FMeshBatch& Mesh = Collector.AllocateMesh();
-						FMeshBatchElement& BatchElement = Mesh.Elements[0];
-						BatchElement.IndexBuffer = &Section->IndexBuffer;
-						Mesh.bWireframe = bWireframe;
-						Mesh.VertexFactory = &Section->VertexFactory;
-						Mesh.MaterialRenderProxy = MaterialProxy;
-
-						bool bHasPrecomputedVolumetricLightmap;
-						FMatrix PreviousLocalToWorld;
-						int32 SingleCaptureIndex;
-						bool bOutputVelocity;
-						GetScene().GetPrimitiveUniformShaderParameters_RenderThread(
-							GetPrimitiveSceneInfo(), bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld,
-							SingleCaptureIndex, bOutputVelocity);
-						bOutputVelocity |= AlwaysHasVelocity();
-
-						FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.
-							AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-						DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(),
-						                                  GetLocalBounds(), GetLocalBounds(), ReceivesDecals(),
-						                                  bHasPrecomputedVolumetricLightmap, bOutputVelocity,
-						                                  GetCustomPrimitiveData());
-						BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
-
-						BatchElement.FirstIndex = 0;
-						BatchElement.NumPrimitives = Section->IndexBuffer.Indices.Num() / 3;
-						BatchElement.MinVertexIndex = 0;
-						BatchElement.MaxVertexIndex = Section->VertexBuffers.PositionVertexBuffer.GetNumVertices() - 1;
-						BatchElement.NumInstances = InstanceNum;
-
-						Mesh.ReverseCulling = IsLocalToWorldDeterminantNegative();
-						Mesh.Type = PT_TriangleList;
-						Mesh.DepthPriorityGroup = SDPG_World;
-						Mesh.bCanApplyViewModeOverrides = false;
-						Collector.AddMesh(ViewIndex, Mesh);
-					}
-				}
-			}
-		}
-
-		// Draw bounds
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
-		{
-			if (VisibilityMap & (1 << ViewIndex))
-			{
-				// Draw simple collision as wireframe if 'show collision', and collision is enabled, and we are not using the complex as the simple
-				if (ViewFamily.EngineShowFlags.Collision && IsCollisionEnabled() && BodySetup->GetCollisionTraceFlag()
-					!= ECollisionTraceFlag::CTF_UseComplexAsSimple)
-				{
-					FTransform GeomTransform(GetLocalToWorld());
-					BodySetup->AggGeom.GetAggGeom(GeomTransform,
-					                              GetSelectionColor(FColor(157, 149, 223, 255), IsSelected(),
-					                                                IsHovered()).ToFColor(true), NULL, false, false,
-					                              AlwaysHasVelocity(), ViewIndex, Collector);
-				}
-
-				// Render bounds
-				RenderBounds(Collector.GetPDI(ViewIndex), ViewFamily.EngineShowFlags, GetBounds(), IsSelected());
-			}
-		}
-#endif
-	}
-
-	// 用于确定View渲染的相关性，可以认为是MeshPass的第一层过滤，用于确定是否参与某些特性的绘制
-	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override
-	{
-		FPrimitiveViewRelevance Result;
-		Result.bDrawRelevance = IsShown(View);
-		Result.bShadowRelevance = IsShadowCast(View);
-		Result.bDynamicRelevance = true;
-		Result.bRenderInMainPass = ShouldRenderInMainPass();
-		Result.bUsesLightingChannels = GetLightingChannelMask() != GetDefaultLightingChannelMask();
-		Result.bRenderCustomDepth = ShouldRenderCustomDepth();
-		Result.bTranslucentSelfShadow = bCastVolumetricTranslucentShadow;
-		MaterialRelevance.SetPrimitiveViewRelevance(Result);
-		Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
-		return Result;
-	}
-
-	virtual bool CanBeOccluded() const override
-	{
-		return !MaterialRelevance.bDisableDepthTest;
-	}
-
-	virtual uint32 GetMemoryFootprint(void) const override
-	{
-		return (sizeof(*this) + GetAllocatedSize());
-	}
-
-	uint32 GetAllocatedSize(void) const
-	{
-		return (FPrimitiveSceneProxy::GetAllocatedSize());
-	}
-
-private:
-	// Array of sections
-	TArray<FVisMeshInstancedProxySection*> Sections;
-
-	int InstanceNum;
-
-	UBodySetup* BodySetup;
-
-	FMaterialRelevance MaterialRelevance;
-
-	FInstancedStaticMeshDataType InstanceData;
-
-	FShaderResourceViewRHIRef OriginSRV;
-	FShaderResourceViewRHIRef TransformSRV;
-};
 
 
 
@@ -924,7 +512,7 @@ void UVisMeshComponent::CreateMeshSection_LinearColor(int32 SectionIndex, const 
 		}
 	}
 
-	UpdateMeshSection(SectionIndex, Vertices, Normals, UV0, UV1, UV2, UV3, Colors, Tangents);
+	CreateMeshSection(SectionIndex, Vertices, Triangles, Normals, UV0, UV1, UV2, UV3, Colors, Tangents, bCreateCollision);
 }
 
 void UVisMeshComponent::UpdateMeshSection(int32 SectionIndex, const TArray<FVector>& Vertices,
@@ -1071,6 +659,19 @@ void UVisMeshComponent::UpdateMeshSection_LinearColor(int32 SectionIndex, const 
                                                       const TArray<FLinearColor>& VertexColors,
                                                       const TArray<FVisMeshTangent>& Tangents, bool bSRGBConversion)
 {
+	// Convert FLinearColors to FColors
+	TArray<FColor> Colors;
+	if (VertexColors.Num() > 0)
+	{
+		Colors.SetNum(VertexColors.Num());
+
+		for (int32 ColorIdx = 0; ColorIdx < VertexColors.Num(); ColorIdx++)
+		{
+			Colors[ColorIdx] = VertexColors[ColorIdx].ToFColor(bSRGBConversion);
+		}
+	}
+
+	UpdateMeshSection(SectionIndex, Vertices, Normals, UV0, UV1, UV2, UV3, Colors, Tangents);
 }
 
 // Called when the game starts

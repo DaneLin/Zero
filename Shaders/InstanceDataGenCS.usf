@@ -1,0 +1,50 @@
+
+#include "/Engine/Private/Common.ush"
+
+RWBuffer<uint> RWOutputArgs;
+RWBuffer<float3> RWOutputPositionBuffer;
+Texture2D InputTexture;
+SamplerState InputTextureSampler;
+float Threshold;
+
+int Dither(int X , int Y , float SampleValue , float Threshold)
+{
+	float4x4 DitherMatrix =float4x4(0  ,  8  ,  2  , 10,
+									12  ,  4  ,  14 , 6 ,
+									 3  ,  11 ,  1 ,  9 ,
+									 15 ,  7 ,  13  ,  5);
+
+	int Sample_x = int(X % 4);
+	int Sample_Y = int(Y % 4);
+	float Matrix_Sample = DitherMatrix[Sample_x][Sample_Y] / 16;
+	float ClampSample = clamp(SampleValue , 0 ,1);
+	return ClampSample * Matrix_Sample > Threshold ? 1 : 0;
+}
+
+[numthreads(BUFFER_SAMPLE_X, BUFFER_SAMPLE_X, 1)]
+void MainCS(uint Gid : SV_GroupIndex ,
+			uint3 DTid : SV_DispatchThreadID)
+{
+	if(Gid.x == 0 && DTid.x == 0 && DTid.y == 0)
+	{
+		// Use this function to atomically set value across compute threads.（使用此函数可以跨计算线程自动设置值。）
+		uint PlaceHolder = 0;
+		InterlockedExchange(RWOutputArgs[0] , 0 , PlaceHolder);  //设置 RWOutputArgs[0] 为 0 ，并记录设置前的值
+	}
+
+	int2 IntXY = int2(int(DTid.x % 32.0f) , int(DTid.y % 32.0f));
+
+	float2 UV = float2(IntXY.x , IntXY.y) / 32.0f;
+	float4 SamplerValue = InputTexture.SampleLevel(InputTextureSampler , UV , 0);
+	
+	// 如果采样出来的值乘以一个随机值的结果 大于 Threshold ，
+	// RWOutputArgs + 1 , 并添加一个 RWOutputPositionBuffer 的位置
+	if(Dither(IntXY.x , IntXY.y , SamplerValue.r , Threshold))	
+		// TODO: remove this debug code
+			// if(DTid.x == 0 && DTid.y == 0)
+	{
+		uint WriteIndex = 0; //记录叠加后的结果
+		InterlockedAdd(RWOutputArgs[0] , 1 ,WriteIndex);
+		RWOutputPositionBuffer[WriteIndex] = float4( IntXY.x * 100,  IntXY.y * 100, 0 ,0);
+	}
+}

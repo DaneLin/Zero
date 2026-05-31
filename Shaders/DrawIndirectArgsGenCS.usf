@@ -1,0 +1,21 @@
+#include "/Engine/Private/Common.ush"
+
+// NumIndicesPerInstance
+// InstanceCount
+// StartIndexLocation
+// BaseVertexLocation
+// StartInstanceLocation
+
+RWBuffer<uint> DrawIndirectArgs;
+uint NumIndicesPerInstance;
+RWBuffer<uint> RWInstanceCounts;
+
+[numthreads(ARGS_GEN_THREAD_COUNT, 1, 1)]
+void MainCS(uint TaskIndex : SV_DispatchThreadID)
+{
+	DrawIndirectArgs[0] = NumIndicesPerInstance;
+	DrawIndirectArgs[1] = RWInstanceCounts[0];;
+	DrawIndirectArgs[2] = 0;
+	DrawIndirectArgs[3] = 0;
+	DrawIndirectArgs[4] = 0;
+}
